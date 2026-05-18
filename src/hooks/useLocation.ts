@@ -9,10 +9,62 @@ export interface LocationData {
   timestamp: number;
 }
 
+export interface GeocodedAddress {
+  city: string | null;
+  district: string | null;
+  region: string | null;       // province / state
+  street: string | null;       // road name
+  country: string | null;
+  postalCode: string | null;
+  name: string | null;         // place name / plus code
+}
+
 export const useLocation = () => {
   const [location, setLocation] = useState<LocationData | null>(null);
+  const [address, setAddress] = useState<GeocodedAddress | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Reverse geocode whenever location changes significantly
+  useEffect(() => {
+    if (!location) return;
+
+    let cancelled = false;
+
+    const reverseGeocode = async () => {
+      try {
+        const results = await Location.reverseGeocodeAsync({
+          latitude: location.latitude,
+          longitude: location.longitude,
+        });
+
+        if (!cancelled && results.length > 0) {
+          const r = results[0];
+          setAddress({
+            city: r.city || null,
+            district: r.district || r.subregion || null,
+            region: r.region || null,
+            street: r.street || null,
+            country: r.country || null,
+            postalCode: r.postalCode || null,
+            name: r.name || null,
+          });
+        }
+      } catch (err) {
+        console.warn('Reverse geocoding failed:', err);
+      }
+    };
+
+    reverseGeocode();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    // Only re-geocode when coordinates change meaningfully (rounded to ~100m)
+    location ? Math.round(location.latitude * 1000) : null,
+    location ? Math.round(location.longitude * 1000) : null,
+  ]);
 
   useEffect(() => {
     let subscription: Location.LocationSubscription | null = null;
@@ -72,5 +124,5 @@ export const useLocation = () => {
     };
   }, []);
 
-  return { location, errorMsg, loading };
+  return { location, address, errorMsg, loading };
 };
