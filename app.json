@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "LabGPSCamera",
-    "slug": "LabGPSCamera",
+    "name": "Lab GPS Camera",
+    "slug": "Lab GPS Camera",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -31,10 +31,16 @@
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
         "WRITE_EXTERNAL_STORAGE",
+        "READ_EXTERNAL_STORAGE",
+        "CAMERA",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "WRITE_EXTERNAL_STORAGE",
         "READ_EXTERNAL_STORAGE"
       ],
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.dombagaming.LabGPSCamera"
     },
     "web": {
       "favicon": "./assets/favicon.png"
