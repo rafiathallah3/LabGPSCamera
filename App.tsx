@@ -18,6 +18,7 @@ import {
 import { Accelerometer } from 'expo-sensors';
 import { CameraView, useCameraPermissions, FlashMode, CameraType } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as NavigationBar from 'expo-navigation-bar';
 import {
@@ -143,6 +144,7 @@ export default function App() {
   const [captureTimestamp, setCaptureTimestamp] = useState<number | null>(null);
 
   const cameraRef = useRef<any>(null);
+  const isSavingRef = useRef(false);
   const viewShotRef = useRef<ViewShot>(null);
   const flashAnim = useRef(new Animated.Value(0)).current;
 
@@ -223,15 +225,50 @@ export default function App() {
     }
   };
 
+  const getCustomFilename = (timestamp: number) => {
+    const date = new Date(timestamp);
+    const hour = String(date.getHours()).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const yyyy = date.getFullYear();
+    return `${hour}_${dd}_${mm}_${yyyy}`;
+  };
+
   // Menyimpan foto ke album khusus aplikasi
-  const saveToAppAlbum = async (uri: string) => {
+  const saveToAppAlbum = async (uri: string, timestamp: number) => {
     try {
-      const asset = await MediaLibrary.createAssetAsync(uri);
+      const customName = getCustomFilename(timestamp);
+      const fileExtension = uri.split('.').pop() || 'jpg';
+      const newLocalUri = `${FileSystem.cacheDirectory}${customName}.${fileExtension}`;
+
+      // Hapus file tujuan jika sudah ada untuk menghindari masalah cache/copy
+      const fileInfo = await FileSystem.getInfoAsync(newLocalUri);
+      if (fileInfo.exists) {
+        await FileSystem.deleteAsync(newLocalUri, { idempotent: true });
+      }
+
+      // Salin file ke URI kustom dengan nama yang diinginkan
+      await FileSystem.copyAsync({
+        from: uri,
+        to: newLocalUri,
+      });
+
       const album = await MediaLibrary.getAlbumAsync(APP_ALBUM_NAME);
       if (album) {
-        await MediaLibrary.addAssetsToAlbumAsync([asset], album, true);
+        // Simpan langsung ke album yang sudah ada tanpa duplikasi dan tanpa prompt move/delete
+        await MediaLibrary.createAssetAsync(newLocalUri, album);
       } else {
+        // Buat asset terlebih dahulu
+        const asset = await MediaLibrary.createAssetAsync(newLocalUri);
+        // Buat album dan salin asset (menggunakan true agar aman dari crash/prompt di semua versi Android)
         await MediaLibrary.createAlbumAsync(APP_ALBUM_NAME, asset, true);
+      }
+
+      // Hapus file kustom sementara dari cache
+      try {
+        await FileSystem.deleteAsync(newLocalUri, { idempotent: true });
+      } catch (err) {
+        console.warn('Failed to delete temp file:', err);
       }
     } catch (e) {
       console.warn('Failed to save to app album:', e);
@@ -240,8 +277,13 @@ export default function App() {
 
   // Dipanggil saat Gambar offscreen di dalam ViewShot selesai dimuat
   const handlePendingImageLoad = async () => {
+    if (isSavingRef.current) return;
+    isSavingRef.current = true;
+
     // Delay kecil untuk memastikan layout selesai
     await new Promise(resolve => setTimeout(resolve, 100));
+
+    const timestamp = captureTimestamp || Date.now();
 
     try {
       const watermarkedUri = await viewShotRef.current?.capture?.();
@@ -250,7 +292,7 @@ export default function App() {
       setLastPhoto(watermarkedUri);
 
       if (mediaPermission?.granted) {
-        await saveToAppAlbum(watermarkedUri);
+        await saveToAppAlbum(watermarkedUri, timestamp);
       }
     } catch (err) {
       console.error('ViewShot capture failed, saving raw photo', err);
@@ -258,13 +300,14 @@ export default function App() {
       if (pendingPhoto) {
         setLastPhoto(pendingPhoto);
         if (mediaPermission?.granted) {
-          await saveToAppAlbum(pendingPhoto);
+          await saveToAppAlbum(pendingPhoto, timestamp);
         }
       }
     } finally {
       setPendingPhoto(null);
       setCaptureTimestamp(null);
       setIsCapturing(false);
+      isSavingRef.current = false;
     }
   };
 
@@ -414,15 +457,15 @@ export default function App() {
       <RNStatusBar barStyle="light-content" />
 
       {/* ViewShot offscreen untuk komposit watermark */}
-      <View style={[styles.offscreen, { width: viewShotWidth, height: viewShotHeight }]}>
+      <View style={[styles.offscreen, { width: viewShotWidth, height: viewShotHeight }]} collapsable={false}>
         <ViewShot
           ref={viewShotRef}
           options={{ format: "jpg", quality: 1.0 }}
-          style={styles.offscreenViewShot}
+          style={[styles.offscreenViewShot, { backgroundColor: '#000' }]}
         >
           {pendingPhoto && (
-            <View style={styles.offscreenViewShot}>
-              <View style={[StyleSheet.absoluteFill, mirrorImage && { transform: [{ scaleX: -1 }] }]}>
+            <View style={styles.offscreenViewShot} collapsable={false}>
+              <View style={[StyleSheet.absoluteFill, mirrorImage && { transform: [{ scaleX: -1 }] }]} collapsable={false}>
                 <Image
                   source={{ uri: pendingPhoto }}
                   style={getCapturedBackgroundImageStyle()}
@@ -670,8 +713,9 @@ const styles = StyleSheet.create({
   // Kontainer offscreen untuk komposit ViewShot (dimensi diatur inline)
   offscreen: {
     position: 'absolute',
-    left: -9999,
+    left: 0,
     top: 0,
+    zIndex: -1,
   },
   offscreenViewShot: {
     width: SCREEN_WIDTH,
