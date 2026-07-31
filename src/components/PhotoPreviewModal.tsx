@@ -41,7 +41,7 @@ export function PhotoPreviewModal({
             <Image
               source={{ uri: photoUri }}
               style={styles.previewImage}
-              resizeMode="cover"
+              resizeMode="contain"
             />
           )}
         </View>
@@ -120,7 +120,7 @@ const styles = StyleSheet.create({
   },
   previewImage: {
     width: '100%',
-    aspectRatio: 3 / 4,
+    height: '100%',
   },
   previewActionsOverlay: {
     position: 'absolute',

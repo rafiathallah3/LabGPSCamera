@@ -13,7 +13,8 @@ import {
   Modal,
   Platform,
   StatusBar as RNStatusBar,
-  FlatList
+  FlatList,
+  PixelRatio
 } from 'react-native';
 import { Accelerometer } from 'expo-sensors';
 import { CameraView, useCameraPermissions, FlashMode, CameraType } from 'expo-camera';
@@ -21,6 +22,7 @@ import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as NavigationBar from 'expo-navigation-bar';
+import * as ImageManipulator from 'expo-image-manipulator';
 import {
   RefreshCw,
   Zap,
@@ -53,6 +55,60 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 // Tipe orientasi perangkat berdasarkan kemiringan fisik
 type DeviceOrientation = 'portrait' | 'landscape-left' | 'landscape-right' | 'upside-down';
 
+// Memastikan foto hasil tangkapan selalu dalam orientasi portrait yang benar
+const normalizePhotoOrientation = async (
+  uri: string,
+  orientation: DeviceOrientation,
+  exif?: any,
+  width?: number,
+  height?: number
+): Promise<string> => {
+  try {
+    let rotateAngle = 0;
+
+    // 1. Cek dari orientasi perangkat saat pengambilan foto
+    if (orientation === 'landscape-left') {
+      rotateAngle = 270;
+    } else if (orientation === 'landscape-right') {
+      rotateAngle = 90;
+    } else if (orientation === 'upside-down') {
+      rotateAngle = 180;
+    } else if (exif && exif.Orientation) {
+      // 2. Cek dari EXIF Orientation jika ada
+      switch (exif.Orientation) {
+        case 6:
+          rotateAngle = 270;
+          break;
+        case 8:
+          rotateAngle = 90;
+          break;
+        case 3:
+          rotateAngle = 180;
+          break;
+      }
+    } else if (width && height && width > height) {
+      // 3. Jika dimensi landscape (width > height) di mode portrait
+      rotateAngle = 270;
+    }
+
+    // Jika ada rotasi atau EXIF orientation bukan 1, gunakan ImageManipulator
+    if (rotateAngle !== 0 || (exif && exif.Orientation && exif.Orientation !== 1)) {
+      const actions = rotateAngle !== 0 ? [{ rotate: rotateAngle }] : [];
+      const result = await ImageManipulator.manipulateAsync(
+        uri,
+        actions,
+        { format: ImageManipulator.SaveFormat.JPEG, compress: 1 }
+      );
+      return result.uri;
+    }
+
+    return uri;
+  } catch (err) {
+    console.warn('Failed to normalize photo orientation:', err);
+    return uri;
+  }
+};
+
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [mediaPermission, requestMediaPermission] = MediaLibrary.usePermissions();
@@ -78,8 +134,12 @@ export default function App() {
   const isLandscape = deviceOrientation !== 'portrait';
 
   // ViewShot selalu menggunakan dimensi portrait (layar dikunci ke portrait)
+  // Use a high-res multiplier so the captured image is much larger than screen DPs
+  const VIEW_SHOT_SCALE = Math.max(PixelRatio.get(), 3); // at least 3x for high quality
   const viewShotWidth = SCREEN_WIDTH;
   const viewShotHeight = SCREEN_WIDTH * (4 / 3);
+  const viewShotPixelWidth = Math.round(viewShotWidth * VIEW_SHOT_SCALE);
+  const viewShotPixelHeight = Math.round(viewShotHeight * VIEW_SHOT_SCALE);
 
   // Logo untuk watermark
   const logoSource = require('./assets/logo_iflab.jpg');
@@ -88,6 +148,8 @@ export default function App() {
   const [flash, setFlash] = useState<FlashMode>('off');
   const [lastPhoto, setLastPhoto] = useState<string | null>(null);
   const [lastPhotoTimestamp, setLastPhotoTimestamp] = useState<number | null>(null);
+  const [lastPhotoAsset, setLastPhotoAsset] = useState<MediaLibrary.Asset | null>(null);
+  const [bestPictureSize, setBestPictureSize] = useState<string | undefined>(undefined);
   const [isCapturing, setIsCapturing] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -186,6 +248,7 @@ export default function App() {
   }
 
   const toggleFacing = () => {
+    setBestPictureSize(undefined);
     setFacing(current => (current === 'back' ? 'front' : 'back'));
   };
 
@@ -209,6 +272,7 @@ export default function App() {
       const photo = await cameraRef.current.takePictureAsync({
         quality: 1,
         shutterSound: false,
+        exif: true,
       });
       if (!photo?.uri) throw new Error("Camera returned no photo");
 
@@ -216,8 +280,19 @@ export default function App() {
       const now = Date.now();
       setCaptureTimestamp(now);
       setLastPhotoTimestamp(now);
+      setLastPhotoAsset(null);
+
+      // Normalisasi orientasi foto agar selalu tampil portrait
+      const normalizedUri = await normalizePhotoOrientation(
+        photo.uri,
+        deviceOrientation,
+        photo.exif,
+        photo.width,
+        photo.height
+      );
+
       // Set foto yang tertunda — onLoad dari Gambar ViewShot offscreen akan memicu proses komposit
-      setPendingPhoto(photo.uri);
+      setPendingPhoto(normalizedUri);
     } catch (error) {
       console.error('Capture failed', error);
       setIsCapturing(false);
@@ -235,7 +310,7 @@ export default function App() {
   };
 
   // Menyimpan foto ke album khusus aplikasi
-  const saveToAppAlbum = async (uri: string, timestamp: number) => {
+  const saveToAppAlbum = async (uri: string, timestamp: number): Promise<MediaLibrary.Asset | null> => {
     try {
       const customName = getCustomFilename(timestamp);
       const fileExtension = uri.split('.').pop() || 'jpg';
@@ -254,14 +329,16 @@ export default function App() {
       });
 
       const album = await MediaLibrary.getAlbumAsync(APP_ALBUM_NAME);
+      let createdAsset: MediaLibrary.Asset | null = null;
       if (album) {
         // Simpan langsung ke album yang sudah ada tanpa duplikasi dan tanpa prompt move/delete
-        await MediaLibrary.createAssetAsync(newLocalUri, album);
+        createdAsset = await MediaLibrary.createAssetAsync(newLocalUri, album);
       } else {
         // Buat asset terlebih dahulu
         const asset = await MediaLibrary.createAssetAsync(newLocalUri);
         // Buat album dan salin asset (menggunakan true agar aman dari crash/prompt di semua versi Android)
         await MediaLibrary.createAlbumAsync(APP_ALBUM_NAME, asset, true);
+        createdAsset = asset;
       }
 
       // Hapus file kustom sementara dari cache
@@ -270,8 +347,10 @@ export default function App() {
       } catch (err) {
         console.warn('Failed to delete temp file:', err);
       }
+      return createdAsset;
     } catch (e) {
       console.warn('Failed to save to app album:', e);
+      return null;
     }
   };
 
@@ -292,7 +371,8 @@ export default function App() {
       setLastPhoto(watermarkedUri);
 
       if (mediaPermission?.granted) {
-        await saveToAppAlbum(watermarkedUri, timestamp);
+        const asset = await saveToAppAlbum(watermarkedUri, timestamp);
+        if (asset) setLastPhotoAsset(asset);
       }
     } catch (err) {
       console.error('ViewShot capture failed, saving raw photo', err);
@@ -300,7 +380,8 @@ export default function App() {
       if (pendingPhoto) {
         setLastPhoto(pendingPhoto);
         if (mediaPermission?.granted) {
-          await saveToAppAlbum(pendingPhoto, timestamp);
+          const asset = await saveToAppAlbum(pendingPhoto, timestamp);
+          if (asset) setLastPhotoAsset(asset);
         }
       }
     } finally {
@@ -333,18 +414,51 @@ export default function App() {
   };
 
   const deletePhoto = async () => {
-    Alert.alert('Delete Photo', 'Are you sure you want to delete this photo?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          setLastPhoto(null);
-          setLastPhotoTimestamp(null);
-          setShowPreview(false);
-        },
-      },
-    ]);
+    try {
+      let assetToDelete: MediaLibrary.Asset | null = lastPhotoAsset;
+
+      if (!assetToDelete && lastPhoto) {
+        const album = await MediaLibrary.getAlbumAsync(APP_ALBUM_NAME);
+        if (album) {
+          const { assets } = await MediaLibrary.getAssetsAsync({
+            album,
+            mediaType: 'photo',
+            first: 100,
+            sortBy: [[MediaLibrary.SortBy.creationTime, false]],
+          });
+          assetToDelete =
+            assets.find(
+              (a) => a.uri === lastPhoto || a.filename === lastPhoto.split('/').pop()
+            ) || null;
+        }
+      }
+
+      if (assetToDelete) {
+        const success = await MediaLibrary.deleteAssetsAsync([assetToDelete]);
+        if (!success) {
+          return;
+        }
+        setGalleryPhotos((prev) => prev.filter((p) => p.id !== assetToDelete?.id));
+      }
+    } catch (error) {
+      console.warn('Failed to delete asset from MediaLibrary:', error);
+    }
+
+    if (lastPhoto && lastPhoto.startsWith('file://')) {
+      try {
+        const fileInfo = await FileSystem.getInfoAsync(lastPhoto);
+        if (fileInfo.exists) {
+          await FileSystem.deleteAsync(lastPhoto, { idempotent: true });
+        }
+      } catch (err) {
+        console.warn('Failed to delete local photo file:', err);
+      }
+    }
+
+    setLastPhoto(null);
+    setLastPhotoTimestamp(null);
+    setLastPhotoAsset(null);
+    setShowPreview(false);
   };
 
   const loadGallery = async () => {
@@ -381,6 +495,7 @@ export default function App() {
     const info = await MediaLibrary.getAssetInfoAsync(asset);
     setLastPhoto(info.localUri || asset.uri);
     setLastPhotoTimestamp(asset.creationTime);
+    setLastPhotoAsset(asset);
     setShowGallery(false);
     setShowPreview(true);
   };
@@ -420,30 +535,14 @@ export default function App() {
     };
   };
 
+  // Foto hasil tangkapan sudah dinormalisasi ke portrait, sehingga selalu menggunakan absoluteFill
   const getCapturedBackgroundImageStyle = () => {
-    if (captureOrientation === 'portrait') {
-      return StyleSheet.absoluteFillObject;
-    }
-    if (captureOrientation === 'upside-down') {
-      return {
-        ...StyleSheet.absoluteFillObject,
-        transform: [{ rotate: '180deg' }],
-      };
-    }
-    // Balikkan rotasi untuk gambar latar belakang guna memperbaiki flip
-    const rotation = captureOrientation === 'landscape-left' ? '90deg' : '-90deg';
-    return {
-      position: 'absolute' as const,
-      left: (CAMERA_W - CAMERA_H) / 2,
-      top: (CAMERA_H - CAMERA_W) / 2,
-      width: CAMERA_H,
-      height: CAMERA_W,
-      transform: [{ rotate: rotation }],
-    };
+    return StyleSheet.absoluteFillObject;
   };
 
   const orientedOverlayStyle = getOrientedOverlayStyle(deviceOrientation);
-  const capturedOverlayStyle = getOrientedOverlayStyle(captureOrientation);
+  // Watermark pada hasil tangkapan selalu tampil dalam orientasi portrait yang benar
+  const capturedOverlayStyle = StyleSheet.absoluteFillObject;
 
   const cycleLogoPosition = () => {
     const positions: Array<'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'> = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
@@ -460,7 +559,7 @@ export default function App() {
       <View style={[styles.offscreen, { width: viewShotWidth, height: viewShotHeight }]} collapsable={false}>
         <ViewShot
           ref={viewShotRef}
-          options={{ format: "jpg", quality: 1.0 }}
+          options={{ format: "jpg", quality: 1.0, width: viewShotPixelWidth, height: viewShotPixelHeight }}
           style={[styles.offscreenViewShot, { backgroundColor: '#000' }]}
         >
           {pendingPhoto && (
@@ -527,6 +626,47 @@ export default function App() {
           style={[styles.camera, mirrorImage && { transform: [{ scaleX: -1 }] }]}
           facing={facing}
           flash={flash}
+          pictureSize={bestPictureSize}
+          onCameraReady={async () => {
+            try {
+              const sizes = await cameraRef.current?.getAvailablePictureSizesAsync?.();
+              if (sizes && sizes.length > 0) {
+                // Pick the largest 4:3 size, or fallback to the largest overall
+                let best = sizes[0];
+                let bestPixels = 0;
+                for (const s of sizes) {
+                  const parts = s.split('x');
+                  if (parts.length === 2) {
+                    const w = parseInt(parts[0], 10);
+                    const h = parseInt(parts[1], 10);
+                    const pixels = w * h;
+                    const ratio = Math.max(w, h) / Math.min(w, h);
+                    // Prefer 4:3 ratio (1.333) with some tolerance
+                    if (Math.abs(ratio - 4 / 3) < 0.05 && pixels > bestPixels) {
+                      best = s;
+                      bestPixels = pixels;
+                    }
+                  }
+                }
+                // If no 4:3 found, pick the largest overall
+                if (bestPixels === 0) {
+                  for (const s of sizes) {
+                    const parts = s.split('x');
+                    if (parts.length === 2) {
+                      const pixels = parseInt(parts[0], 10) * parseInt(parts[1], 10);
+                      if (pixels > bestPixels) {
+                        best = s;
+                        bestPixels = pixels;
+                      }
+                    }
+                  }
+                }
+                setBestPictureSize(best);
+              }
+            } catch (e) {
+              console.warn('Could not get available picture sizes:', e);
+            }
+          }}
         >
           <View style={[StyleSheet.absoluteFill, mirrorImage && { transform: [{ scaleX: -1 }] }]} pointerEvents="none">
             {/* Overlay orientasi: memutar watermark + logo agar sesuai kemiringan perangkat */}
@@ -539,36 +679,36 @@ export default function App() {
               {/* Overlay Watermark GPS Bawah (preview langsung) */}
               <View style={styles.watermarkContainer}>
                 <View style={styles.watermarkInnerBg}>
-                <View style={styles.watermarkContent}>
-                  <View style={styles.watermarkLeft}>
-                    {mapTile && (
-                      <View style={styles.mapThumbnailContainer}>
-                        <Image source={{ uri: mapTile.url }} style={styles.mapThumbnail} resizeMode="cover" />
-                        <View style={[styles.mapMarker, { left: `${mapTile.xFraction * 100}%`, top: `${mapTile.yFraction * 100}%` }]}>
-                          <View style={styles.mapMarkerShadow} />
-                          <MapPin size={18} color="#ef4444" fill="#ef4444" strokeWidth={2} />
+                  <View style={styles.watermarkContent}>
+                    <View style={styles.watermarkLeft}>
+                      {mapTile && (
+                        <View style={styles.mapThumbnailContainer}>
+                          <Image source={{ uri: mapTile.url }} style={styles.mapThumbnail} resizeMode="cover" />
+                          <View style={[styles.mapMarker, { left: `${mapTile.xFraction * 100}%`, top: `${mapTile.yFraction * 100}%` }]}>
+                            <View style={styles.mapMarkerShadow} />
+                            <MapPin size={18} color="#ef4444" fill="#ef4444" strokeWidth={2} />
+                          </View>
                         </View>
-                      </View>
-                    )}
-                  </View>
-                  <View style={styles.watermarkRight}>
-                    <Text style={styles.addressTitle}>
-                      {address ? [address.district, address.region, address.country].filter(Boolean).join(', ') : '---'}
-                    </Text>
-                    {address?.street && (
-                      <Text style={styles.addressDetail}>
-                        {[address.name, address.street, address.district, address.region, address.postalCode, address.country].filter(Boolean).join(', ')}
+                      )}
+                    </View>
+                    <View style={styles.watermarkRight}>
+                      <Text style={styles.addressTitle}>
+                        {address ? [address.district, address.region, address.country].filter(Boolean).join(', ') : '---'}
                       </Text>
-                    )}
-                    <Text style={styles.coordTextSmall}>
-                      Lat {location ? location.latitude.toFixed(6) : '---'}° Long {location ? location.longitude.toFixed(6) : '---'}°
-                    </Text>
-                    <Text style={styles.dateText}>
-                      {formatDateTime(location?.timestamp || Date.now(), timeFormat)}
-                    </Text>
+                      {address?.street && (
+                        <Text style={styles.addressDetail}>
+                          {[address.name, address.street, address.district, address.region, address.postalCode, address.country].filter(Boolean).join(', ')}
+                        </Text>
+                      )}
+                      <Text style={styles.coordTextSmall}>
+                        Lat {location ? location.latitude.toFixed(6) : '---'}° Long {location ? location.longitude.toFixed(6) : '---'}°
+                      </Text>
+                      <Text style={styles.dateText}>
+                        {formatDateTime(location?.timestamp || Date.now(), timeFormat)}
+                      </Text>
+                    </View>
                   </View>
                 </View>
-              </View>
               </View>
             </View>
           </View>
