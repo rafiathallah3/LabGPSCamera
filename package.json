@@ -1,5 +1,5 @@
 {
-  "name": "labgpscamera",
+  "name": "iflab-gps-camera",
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {

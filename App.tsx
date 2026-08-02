@@ -49,7 +49,7 @@ import { PhotoPreviewModal } from './src/components/PhotoPreviewModal';
 import { GalleryView } from './src/components/GalleryView';
 import { SettingsModal } from './src/components/SettingsModal';
 
-const APP_ALBUM_NAME = 'Lab GPS Camera';
+const APP_ALBUM_NAME = 'IFLab GPS Camera';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 // Tipe orientasi perangkat berdasarkan kemiringan fisik

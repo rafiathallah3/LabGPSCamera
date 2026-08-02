@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Lab GPS Camera",
-    "slug": "Lab GPS Camera",
+    "name": "IFLab GPS Camera",
+    "slug": "IFLab GPS Camera",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -40,7 +40,7 @@
       ],
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.dombagaming.LabGPSCamera"
+      "package": "com.rafiathallah.iflabgpscamera"
     },
     "web": {
       "favicon": "./assets/favicon.png"

@@ -1,10 +1,10 @@
-# Lab GPS Camera
+# IFLab GPS Camera
 
 A GPS camera application for **IFLab**.
 
 ## Purpose
 
-Many existing GPS camera applications on the play store are cluttered with intrusive advertisements that disrupt the user experience and slow down the capturing process. **Lab GPS Camera** was developed as a clean, professional, and entirely **ad-free alternative**. 
+Many existing GPS camera applications on the play store are cluttered with intrusive advertisements that disrupt the user experience and slow down the capturing process. **IFLab GPS Camera** was developed as a clean, professional, and entirely **ad-free alternative**. 
 
 ## Installation
 
