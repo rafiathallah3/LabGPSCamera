@@ -66,37 +66,22 @@ const normalizePhotoOrientation = async (
   try {
     let rotateAngle = 0;
 
-    // 1. Cek dari orientasi perangkat saat pengambilan foto
+    // Tentukan rotasi berdasarkan orientasi fisik perangkat saat mengambil foto
     if (orientation === 'landscape-left') {
       rotateAngle = 270;
     } else if (orientation === 'landscape-right') {
       rotateAngle = 90;
     } else if (orientation === 'upside-down') {
       rotateAngle = 180;
-    } else if (exif && exif.Orientation) {
-      // 2. Cek dari EXIF Orientation jika ada
-      switch (exif.Orientation) {
-        case 6:
-          rotateAngle = 270;
-          break;
-        case 8:
-          rotateAngle = 90;
-          break;
-        case 3:
-          rotateAngle = 180;
-          break;
-      }
-    } else if (width && height && width > height) {
-      // 3. Jika dimensi landscape (width > height) di mode portrait
-      rotateAngle = 270;
+    } else if (orientation === 'portrait') {
+      // Dalam mode portrait, foto dari kamera sudah dalam orientasi portrait yang benar
+      rotateAngle = 0;
     }
 
-    // Jika ada rotasi atau EXIF orientation bukan 1, gunakan ImageManipulator
-    if (rotateAngle !== 0 || (exif && exif.Orientation && exif.Orientation !== 1)) {
-      const actions = rotateAngle !== 0 ? [{ rotate: rotateAngle }] : [];
+    if (rotateAngle !== 0) {
       const result = await ImageManipulator.manipulateAsync(
         uri,
-        actions,
+        [{ rotate: rotateAngle }],
         { format: ImageManipulator.SaveFormat.JPEG, compress: 1 }
       );
       return result.uri;
@@ -359,8 +344,12 @@ export default function App() {
     if (isSavingRef.current) return;
     isSavingRef.current = true;
 
-    // Delay kecil untuk memastikan layout selesai
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Tunggu frame berikutnya dan delay lebih panjang untuk memastikan gambar sepenuhnya di-render
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => {
+        setTimeout(resolve, 300);
+      });
+    });
 
     const timestamp = captureTimestamp || Date.now();
 
@@ -401,6 +390,8 @@ export default function App() {
   const openPreview = () => {
     if (lastPhoto) {
       setShowPreview(true);
+    } else {
+      loadGallery();
     }
   };
 
@@ -757,11 +748,10 @@ export default function App() {
       {/* Overlay Kontrol UI (Tidak ditangkap oleh ViewShot) */}
       <SafeAreaView style={styles.controlsContainer}>
         <View style={styles.controlsRow}>
-          {/* Galeri / Foto Terakhir — sekarang membuka preview */}
+          {/* Galeri / Foto Terakhir — membuka preview jika ada foto, atau membuka galeri jika belum ada */}
           <TouchableOpacity
             style={styles.sideButton}
             onPress={openPreview}
-            disabled={!lastPhoto}
           >
             {lastPhoto ? (
               <Image source={{ uri: lastPhoto }} style={styles.thumbnailImage} />
@@ -853,9 +843,9 @@ const styles = StyleSheet.create({
   // Kontainer offscreen untuk komposit ViewShot (dimensi diatur inline)
   offscreen: {
     position: 'absolute',
-    left: 0,
+    left: -9999,
     top: 0,
-    zIndex: -1,
+    overflow: 'hidden',
   },
   offscreenViewShot: {
     width: SCREEN_WIDTH,
