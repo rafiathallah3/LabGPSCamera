@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, SafeAreaView, StyleSheet, FlatList, Image } from 'react-native';
+import { View, Text, TouchableOpacity, SafeAreaView, StyleSheet, FlatList, Image, Platform, StatusBar as RNStatusBar } from 'react-native';
 import { ChevronLeft, Image as ImageIcon } from 'lucide-react-native';
 import * as MediaLibrary from 'expo-media-library';
 
@@ -7,7 +7,7 @@ interface GalleryViewProps {
   visible: boolean;
   onClose: () => void;
   photos: MediaLibrary.Asset[];
-  onOpenPhoto: (asset: MediaLibrary.Asset) => void;
+  onOpenPhoto: (asset: MediaLibrary.Asset, index: number) => void;
 }
 
 export function GalleryView({ visible, onClose, photos, onOpenPhoto }: GalleryViewProps) {
@@ -28,8 +28,8 @@ export function GalleryView({ visible, onClose, photos, onOpenPhoto }: GalleryVi
         numColumns={3}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.galleryGrid}
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.galleryItem} onPress={() => onOpenPhoto(item)}>
+        renderItem={({ item, index }) => (
+          <TouchableOpacity style={styles.galleryItem} onPress={() => onOpenPhoto(item, index)}>
             <Image source={{ uri: item.uri }} style={styles.galleryThumb} resizeMode="cover" />
           </TouchableOpacity>
         )}
@@ -55,7 +55,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: Platform.OS === 'android' ? (RNStatusBar.currentHeight || 24) + 12 : 12,
     paddingBottom: 12,
   },
   settingsHeaderButton: {

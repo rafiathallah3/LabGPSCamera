@@ -10,11 +10,9 @@ import {
   Image,
   Alert,
   Animated,
-  Modal,
   Platform,
   StatusBar as RNStatusBar,
-  FlatList,
-  PixelRatio
+  PixelRatio,
 } from 'react-native';
 import { Accelerometer } from 'expo-sensors';
 import { CameraView, useCameraPermissions, FlashMode, CameraType } from 'expo-camera';
@@ -29,13 +27,10 @@ import {
   ZapOff,
   MapPin,
   Image as ImageIcon,
-  Share2,
   XCircle,
   X,
   Settings,
-  ChevronLeft,
-  Trash2,
-  Grid
+  Timer,
 } from 'lucide-react-native';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -47,34 +42,30 @@ import { formatDateTime, TimeFormat } from './src/utils/formatters';
 import { getMapTile } from './src/utils/mapTile';
 import { PhotoPreviewModal } from './src/components/PhotoPreviewModal';
 import { GalleryView } from './src/components/GalleryView';
-import { SettingsModal } from './src/components/SettingsModal';
+import { SettingsModal, LogoPosition } from './src/components/SettingsModal';
 
 const APP_ALBUM_NAME = 'IFLab GPS Camera';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 // Tipe orientasi perangkat berdasarkan kemiringan fisik
 type DeviceOrientation = 'portrait' | 'landscape-left' | 'landscape-right' | 'upside-down';
+type TimerDuration = 0 | 3 | 5 | 10;
 
-// Memastikan foto hasil tangkapan selalu dalam orientasi portrait yang benar
+// Menyesuaikan rotasi foto hasil kamera agar tegak sesuai orientasi pengambilan
 const normalizePhotoOrientation = async (
   uri: string,
-  orientation: DeviceOrientation,
-  exif?: any,
-  width?: number,
-  height?: number
+  orientation: DeviceOrientation
 ): Promise<string> => {
   try {
     let rotateAngle = 0;
 
-    // Tentukan rotasi berdasarkan orientasi fisik perangkat saat mengambil foto
-    if (orientation === 'landscape-left') {
-      rotateAngle = 270;
-    } else if (orientation === 'landscape-right') {
-      rotateAngle = 90;
+    if (orientation === 'landscape-right') {
+      rotateAngle = 180;
     } else if (orientation === 'upside-down') {
       rotateAngle = 180;
-    } else if (orientation === 'portrait') {
-      // Dalam mode portrait, foto dari kamera sudah dalam orientasi portrait yang benar
+    } else {
+      // Dalam portrait dan landscape-left, foto langsung digunakan tanpa rotasi
+      // karena sudah sesuai dengan dimensi ViewShot masing-masing
       rotateAngle = 0;
     }
 
@@ -103,12 +94,17 @@ export default function App() {
   const [deviceOrientation, setDeviceOrientation] = useState<DeviceOrientation>('portrait');
   const [captureOrientation, setCaptureOrientation] = useState<DeviceOrientation>('portrait');
 
+  // Fitur Timer (Off / 3s / 5s / 10s)
+  const [timerDuration, setTimerDuration] = useState<TimerDuration>(0);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     Accelerometer.setUpdateInterval(500);
     const subscription = Accelerometer.addListener(({ x, y }) => {
       // Tentukan orientasi dari vektor gravitasi
       if (Math.abs(x) > Math.abs(y)) {
-        setDeviceOrientation(x > 0 ? 'landscape-right' : 'landscape-left');
+        setDeviceOrientation(x > 0 ? 'landscape-left' : 'landscape-right');
       } else {
         setDeviceOrientation(y > 0 ? 'portrait' : 'upside-down');
       }
@@ -116,10 +112,15 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
-  const isLandscape = deviceOrientation !== 'portrait';
+  useEffect(() => {
+    return () => {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+    };
+  }, []);
 
-  // ViewShot selalu menggunakan dimensi portrait (layar dikunci ke portrait)
-  // Use a high-res multiplier so the captured image is much larger than screen DPs
+  // ViewShot ukuran dasar (portrait)
   const VIEW_SHOT_SCALE = Math.max(PixelRatio.get(), 3); // at least 3x for high quality
   const viewShotWidth = SCREEN_WIDTH;
   const viewShotHeight = SCREEN_WIDTH * (4 / 3);
@@ -137,9 +138,10 @@ export default function App() {
   const [bestPictureSize, setBestPictureSize] = useState<string | undefined>(undefined);
   const [isCapturing, setIsCapturing] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [previewInitialIndex, setPreviewInitialIndex] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [timeFormat, setTimeFormat] = useState<TimeFormat>('24h');
-  const [logoPosition, setLogoPosition] = useState<'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'>('top-right');
+  const [logoPosition, setLogoPosition] = useState<LogoPosition>('top-right');
   const [mirrorImage, setMirrorImage] = useState(false);
   const [showGallery, setShowGallery] = useState(false);
   const [galleryPhotos, setGalleryPhotos] = useState<MediaLibrary.Asset[]>([]);
@@ -157,6 +159,7 @@ export default function App() {
           if (parsed.flash) setFlash(parsed.flash);
           if (parsed.facing) setFacing(parsed.facing);
           if (parsed.mirrorImage !== undefined) setMirrorImage(parsed.mirrorImage);
+          if (parsed.timerDuration !== undefined) setTimerDuration(parsed.timerDuration);
         }
       } catch (e) {
         console.warn('Failed to load settings:', e);
@@ -178,13 +181,14 @@ export default function App() {
           flash,
           facing,
           mirrorImage,
+          timerDuration,
         }));
       } catch (e) {
         console.warn('Failed to save settings:', e);
       }
     };
     saveSettings();
-  }, [timeFormat, logoPosition, flash, facing, mirrorImage, settingsLoaded]);
+  }, [timeFormat, logoPosition, flash, facing, mirrorImage, timerDuration, settingsLoaded]);
 
   // Untuk komposit watermark ViewShot offscreen
   const [pendingPhoto, setPendingPhoto] = useState<string | null>(null);
@@ -214,6 +218,10 @@ export default function App() {
       if (mediaPermission && !mediaPermission.granted) {
         await requestMediaPermission();
       }
+      // Memuat thumbnail galeri awal jika permission sudah ada
+      if (mediaPermission?.granted) {
+        loadGalleryPhotos(false);
+      }
     })();
   }, [permission, mediaPermission]);
 
@@ -241,11 +249,58 @@ export default function App() {
     setFlash(current => (current === 'off' ? 'on' : 'off'));
   };
 
+  const cycleTimer = () => {
+    setTimerDuration(prev => {
+      if (prev === 0) return 3;
+      if (prev === 3) return 5;
+      if (prev === 5) return 10;
+      return 0;
+    });
+  };
+
+  const cancelCountdown = () => {
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    setCountdown(null);
+  };
+
+  const handleShutterPress = () => {
+    if (isCapturing) return;
+
+    if (countdown !== null) {
+      cancelCountdown();
+      return;
+    }
+
+    if (timerDuration === 0) {
+      capturePhoto();
+    } else {
+      setCountdown(timerDuration);
+      let remaining = timerDuration;
+      countdownIntervalRef.current = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          if (countdownIntervalRef.current) {
+            clearInterval(countdownIntervalRef.current);
+            countdownIntervalRef.current = null;
+          }
+          setCountdown(null);
+          capturePhoto();
+        } else {
+          setCountdown(remaining);
+        }
+      }, 1000);
+    }
+  };
+
   const capturePhoto = async () => {
     if (isCapturing || !cameraRef.current) return;
 
     setIsCapturing(true);
-    setCaptureOrientation(deviceOrientation);
+    const activeOrientation = deviceOrientation;
+    setCaptureOrientation(activeOrientation);
 
     Animated.sequence([
       Animated.timing(flashAnim, { toValue: 1, duration: 50, useNativeDriver: true }),
@@ -253,7 +308,7 @@ export default function App() {
     ]).start();
 
     try {
-      // Ambil foto menggunakan kamera (suara rana dinonaktifkan)
+      // Ambil foto menggunakan kamera
       const photo = await cameraRef.current.takePictureAsync({
         quality: 1,
         shutterSound: false,
@@ -267,13 +322,10 @@ export default function App() {
       setLastPhotoTimestamp(now);
       setLastPhotoAsset(null);
 
-      // Normalisasi orientasi foto agar selalu tampil portrait
+      // Normalisasi orientasi foto
       const normalizedUri = await normalizePhotoOrientation(
         photo.uri,
-        deviceOrientation,
-        photo.exif,
-        photo.width,
-        photo.height
+        activeOrientation
       );
 
       // Set foto yang tertunda — onLoad dari Gambar ViewShot offscreen akan memicu proses komposit
@@ -316,12 +368,9 @@ export default function App() {
       const album = await MediaLibrary.getAlbumAsync(APP_ALBUM_NAME);
       let createdAsset: MediaLibrary.Asset | null = null;
       if (album) {
-        // Simpan langsung ke album yang sudah ada tanpa duplikasi dan tanpa prompt move/delete
         createdAsset = await MediaLibrary.createAssetAsync(newLocalUri, album);
       } else {
-        // Buat asset terlebih dahulu
         const asset = await MediaLibrary.createAssetAsync(newLocalUri);
-        // Buat album dan salin asset (menggunakan true agar aman dari crash/prompt di semua versi Android)
         await MediaLibrary.createAlbumAsync(APP_ALBUM_NAME, asset, true);
         createdAsset = asset;
       }
@@ -344,7 +393,6 @@ export default function App() {
     if (isSavingRef.current) return;
     isSavingRef.current = true;
 
-    // Tunggu frame berikutnya dan delay lebih panjang untuk memastikan gambar sepenuhnya di-render
     await new Promise<void>(resolve => {
       requestAnimationFrame(() => {
         setTimeout(resolve, 300);
@@ -361,16 +409,21 @@ export default function App() {
 
       if (mediaPermission?.granted) {
         const asset = await saveToAppAlbum(watermarkedUri, timestamp);
-        if (asset) setLastPhotoAsset(asset);
+        if (asset) {
+          setLastPhotoAsset(asset);
+          setGalleryPhotos(prev => [asset, ...prev.filter(p => p.id !== asset.id)]);
+        }
       }
     } catch (err) {
       console.error('ViewShot capture failed, saving raw photo', err);
-      // Cadangan: simpan foto mentah tanpa watermark
       if (pendingPhoto) {
         setLastPhoto(pendingPhoto);
         if (mediaPermission?.granted) {
           const asset = await saveToAppAlbum(pendingPhoto, timestamp);
-          if (asset) setLastPhotoAsset(asset);
+          if (asset) {
+            setLastPhotoAsset(asset);
+            setGalleryPhotos(prev => [asset, ...prev.filter(p => p.id !== asset.id)]);
+          }
         }
       }
     } finally {
@@ -381,18 +434,10 @@ export default function App() {
     }
   };
 
-  const sharePhoto = async () => {
-    if (lastPhoto) {
-      await Sharing.shareAsync(lastPhoto);
-    }
-  };
-
-  const openPreview = () => {
-    if (lastPhoto) {
-      setShowPreview(true);
-    } else {
-      loadGallery();
-    }
+  const openPreview = async () => {
+    await loadGalleryPhotos(false);
+    setPreviewInitialIndex(0);
+    setShowPreview(true);
   };
 
   const closePreview = () => {
@@ -401,92 +446,85 @@ export default function App() {
 
   const openGalleryFromPreview = () => {
     setShowPreview(false);
-    loadGallery();
+    loadGalleryPhotos(true);
   };
 
-  const deletePhoto = async () => {
+  const deleteAssetFromPreview = async (asset: MediaLibrary.Asset) => {
     try {
-      let assetToDelete: MediaLibrary.Asset | null = lastPhotoAsset;
-
-      if (!assetToDelete && lastPhoto) {
-        const album = await MediaLibrary.getAlbumAsync(APP_ALBUM_NAME);
-        if (album) {
-          const { assets } = await MediaLibrary.getAssetsAsync({
-            album,
-            mediaType: 'photo',
-            first: 100,
-            sortBy: [[MediaLibrary.SortBy.creationTime, false]],
-          });
-          assetToDelete =
-            assets.find(
-              (a) => a.uri === lastPhoto || a.filename === lastPhoto.split('/').pop()
-            ) || null;
-        }
+      const success = await MediaLibrary.deleteAssetsAsync([asset]);
+      if (success) {
+        setGalleryPhotos(prev => {
+          const next = prev.filter(p => p.id !== asset.id);
+          if (next.length === 0) {
+            setShowPreview(false);
+            setLastPhoto(null);
+            setLastPhotoAsset(null);
+            setLastPhotoTimestamp(null);
+          } else {
+            setLastPhoto(next[0].uri);
+            setLastPhotoAsset(next[0]);
+            setLastPhotoTimestamp(next[0].creationTime);
+          }
+          return next;
+        });
       }
-
-      if (assetToDelete) {
-        const success = await MediaLibrary.deleteAssetsAsync([assetToDelete]);
-        if (!success) {
-          return;
-        }
-        setGalleryPhotos((prev) => prev.filter((p) => p.id !== assetToDelete?.id));
-      }
-    } catch (error) {
-      console.warn('Failed to delete asset from MediaLibrary:', error);
+    } catch (err) {
+      console.warn('Failed to delete asset from MediaLibrary:', err);
     }
 
-    if (lastPhoto && lastPhoto.startsWith('file://')) {
+    if (asset.uri && asset.uri.startsWith('file://')) {
       try {
-        const fileInfo = await FileSystem.getInfoAsync(lastPhoto);
+        const fileInfo = await FileSystem.getInfoAsync(asset.uri);
         if (fileInfo.exists) {
-          await FileSystem.deleteAsync(lastPhoto, { idempotent: true });
+          await FileSystem.deleteAsync(asset.uri, { idempotent: true });
         }
       } catch (err) {
         console.warn('Failed to delete local photo file:', err);
       }
     }
-
-    setLastPhoto(null);
-    setLastPhotoTimestamp(null);
-    setLastPhotoAsset(null);
-    setShowPreview(false);
   };
 
-  const loadGallery = async () => {
+  const loadGalleryPhotos = async (showGalleryModal: boolean = true) => {
     let hasPermission = mediaPermission?.granted;
     if (!hasPermission) {
       const permissionResponse = await requestMediaPermission();
       hasPermission = permissionResponse.granted;
     }
     if (!hasPermission) {
-      Alert.alert('Permission Required', 'Please grant media library permissions to access the gallery.');
+      if (showGalleryModal) {
+        Alert.alert('Permission Required', 'Please grant media library permissions to access the gallery.');
+      }
       return;
     }
     try {
       const album = await MediaLibrary.getAlbumAsync(APP_ALBUM_NAME);
       if (!album) {
         setGalleryPhotos([]);
-        setShowGallery(true);
+        if (showGalleryModal) setShowGallery(true);
         return;
       }
       const assets = await MediaLibrary.getAssetsAsync({
         album,
         mediaType: 'photo',
-        sortBy: [MediaLibrary.SortBy.creationTime],
-        first: 50,
+        sortBy: [[MediaLibrary.SortBy.creationTime, false]], // Foto terbaru di urutan pertama
+        first: 100,
       });
       setGalleryPhotos(assets.assets);
-      setShowGallery(true);
+      if (assets.assets.length > 0 && !lastPhoto) {
+        setLastPhoto(assets.assets[0].uri);
+        setLastPhotoAsset(assets.assets[0]);
+        setLastPhotoTimestamp(assets.assets[0].creationTime);
+      }
+      if (showGalleryModal) {
+        setShowGallery(true);
+      }
     } catch (e) {
       console.warn('Failed to load gallery:', e);
     }
   };
 
-  const openGalleryPhoto = async (asset: MediaLibrary.Asset) => {
-    const info = await MediaLibrary.getAssetInfoAsync(asset);
-    setLastPhoto(info.localUri || asset.uri);
-    setLastPhotoTimestamp(asset.creationTime);
-    setLastPhotoAsset(asset);
+  const openGalleryPhoto = (asset: MediaLibrary.Asset, index: number) => {
+    setPreviewInitialIndex(index);
     setShowGallery(false);
     setShowPreview(true);
   };
@@ -501,7 +539,7 @@ export default function App() {
     }
   };
 
-  // Style komputasi untuk overlay orientasi yang membungkus watermark + logo
+  // Komputasi overlay orientasi pada live camera preview
   const CAMERA_W = SCREEN_WIDTH;
   const CAMERA_H = SCREEN_WIDTH * (4 / 3);
 
@@ -515,7 +553,7 @@ export default function App() {
         transform: [{ rotate: '180deg' }],
       };
     }
-    const rotation = orientation === 'landscape-left' ? '-90deg' : '90deg';
+    const rotation = orientation === 'landscape-left' ? '90deg' : '-90deg';
     return {
       position: 'absolute' as const,
       left: (CAMERA_W - CAMERA_H) / 2,
@@ -526,51 +564,45 @@ export default function App() {
     };
   };
 
-  // Foto hasil tangkapan sudah dinormalisasi ke portrait, sehingga selalu menggunakan absoluteFill
-  const getCapturedBackgroundImageStyle = () => {
-    return StyleSheet.absoluteFillObject;
-  };
-
   const orientedOverlayStyle = getOrientedOverlayStyle(deviceOrientation);
-  // Watermark pada hasil tangkapan selalu tampil dalam orientasi portrait yang benar
-  const capturedOverlayStyle = StyleSheet.absoluteFillObject;
 
-  const cycleLogoPosition = () => {
-    const positions: Array<'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'> = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
-    const idx = positions.indexOf(logoPosition);
-    setLogoPosition(positions[(idx + 1) % positions.length]);
-  };
+  // Perhitungan dimensi ViewShot berdasarkan orientasi saat tombol ditekan
+  const isLandscapeCapture = captureOrientation === 'landscape-left' || captureOrientation === 'landscape-right';
+  const currentViewShotWidth = isLandscapeCapture ? viewShotHeight : viewShotWidth;
+  const currentViewShotHeight = isLandscapeCapture ? viewShotWidth : viewShotHeight;
+  const currentPixelWidth = isLandscapeCapture ? viewShotPixelHeight : viewShotPixelWidth;
+  const currentPixelHeight = isLandscapeCapture ? viewShotPixelWidth : viewShotPixelHeight;
 
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
-      <RNStatusBar barStyle="light-content" />
+      <RNStatusBar barStyle="light-content" translucent={true} backgroundColor="transparent" />
 
       {/* ViewShot offscreen untuk komposit watermark */}
-      <View style={[styles.offscreen, { width: viewShotWidth, height: viewShotHeight }]} collapsable={false}>
+      <View style={[styles.offscreen, { width: currentViewShotWidth, height: currentViewShotHeight }]} collapsable={false}>
         <ViewShot
           ref={viewShotRef}
-          options={{ format: "jpg", quality: 1.0, width: viewShotPixelWidth, height: viewShotPixelHeight }}
-          style={[styles.offscreenViewShot, { backgroundColor: '#000' }]}
+          options={{ format: "jpg", quality: 1.0, width: currentPixelWidth, height: currentPixelHeight }}
+          style={{ width: currentViewShotWidth, height: currentViewShotHeight, backgroundColor: '#000' }}
         >
           {pendingPhoto && (
-            <View style={styles.offscreenViewShot} collapsable={false}>
+            <View style={{ width: currentViewShotWidth, height: currentViewShotHeight }} collapsable={false}>
               <View style={[StyleSheet.absoluteFill, mirrorImage && { transform: [{ scaleX: -1 }] }]} collapsable={false}>
                 <Image
                   source={{ uri: pendingPhoto }}
-                  style={getCapturedBackgroundImageStyle()}
+                  style={StyleSheet.absoluteFillObject}
                   resizeMode="cover"
                   onLoad={handlePendingImageLoad}
                 />
               </View>
 
-              {/* Overlay orientasi — mencocokkan preview langsung */}
-              <View style={capturedOverlayStyle}>
+              {/* Overlay Watermark & Logo pada hasil tangkapan */}
+              <View style={StyleSheet.absoluteFillObject}>
                 <View style={[styles.logoContainer, logoPositionStyle(logoPosition)]}>
                   <Image source={logoSource} style={styles.logoImage} resizeMode="contain" />
                 </View>
 
-                {/* Overlay Watermark GPS yang disematkan ke hasil tangkapan */}
+                {/* Overlay Watermark GPS */}
                 <View style={styles.watermarkContainer}>
                   <View style={styles.watermarkInnerBg}>
                     <View style={styles.watermarkContent}>
@@ -622,7 +654,6 @@ export default function App() {
             try {
               const sizes = await cameraRef.current?.getAvailablePictureSizesAsync?.();
               if (sizes && sizes.length > 0) {
-                // Pick the largest 4:3 size, or fallback to the largest overall
                 let best = sizes[0];
                 let bestPixels = 0;
                 for (const s of sizes) {
@@ -632,14 +663,12 @@ export default function App() {
                     const h = parseInt(parts[1], 10);
                     const pixels = w * h;
                     const ratio = Math.max(w, h) / Math.min(w, h);
-                    // Prefer 4:3 ratio (1.333) with some tolerance
                     if (Math.abs(ratio - 4 / 3) < 0.05 && pixels > bestPixels) {
                       best = s;
                       bestPixels = pixels;
                     }
                   }
                 }
-                // If no 4:3 found, pick the largest overall
                 if (bestPixels === 0) {
                   for (const s of sizes) {
                     const parts = s.split('x');
@@ -718,6 +747,19 @@ export default function App() {
             )}
           </TouchableOpacity>
 
+          {/* Tombol Timer (Off -> 3s -> 5s -> 10s) */}
+          <TouchableOpacity
+            style={[styles.topBarButton, timerDuration > 0 && styles.topBarButtonActive]}
+            onPress={cycleTimer}
+          >
+            <View style={styles.timerButtonContent}>
+              <Timer size={19} color={timerDuration > 0 ? "#fbbf24" : "#fff"} />
+              {timerDuration > 0 && (
+                <Text style={styles.timerBadgeText}>{timerDuration}s</Text>
+              )}
+            </View>
+          </TouchableOpacity>
+
           {/* Badge Status GPS */}
           <BlurView intensity={30} tint="dark" style={styles.statusBadge}>
             <MapPin size={14} color={location ? "#4ade80" : "#f87171"} strokeWidth={3} />
@@ -745,10 +787,23 @@ export default function App() {
         pointerEvents="none"
       />
 
-      {/* Overlay Kontrol UI (Tidak ditangkap oleh ViewShot) */}
+      {/* Overlay Hitung Mundur Timer */}
+      {countdown !== null && (
+        <View style={styles.countdownOverlay} pointerEvents="box-none">
+          <View style={styles.countdownCircle}>
+            <Text style={styles.countdownNumber}>{countdown}</Text>
+          </View>
+          <TouchableOpacity style={styles.countdownCancelButton} onPress={cancelCountdown}>
+            <X size={18} color="#fff" />
+            <Text style={styles.countdownCancelText}>Cancel Timer</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Overlay Kontrol UI Bawah */}
       <SafeAreaView style={styles.controlsContainer}>
         <View style={styles.controlsRow}>
-          {/* Galeri / Foto Terakhir — membuka preview jika ada foto, atau membuka galeri jika belum ada */}
+          {/* Galeri / Foto Terakhir */}
           <TouchableOpacity
             style={styles.sideButton}
             onPress={openPreview}
@@ -763,14 +818,18 @@ export default function App() {
           {/* Tombol Tangkap Utama */}
           <TouchableOpacity
             style={styles.captureButtonOuter}
-            onPress={capturePhoto}
+            onPress={handleShutterPress}
             disabled={isCapturing}
           >
             <LinearGradient
-              colors={['#fff', '#e2e8f0']}
+              colors={countdown !== null ? ['#fca5a5', '#ef4444'] : ['#fff', '#e2e8f0']}
               style={styles.captureButtonInner}
             >
-              <View style={styles.captureButtonCore} />
+              {countdown !== null ? (
+                <View style={styles.captureButtonStop} />
+              ) : (
+                <View style={styles.captureButtonCore} />
+              )}
             </LinearGradient>
           </TouchableOpacity>
 
@@ -789,16 +848,17 @@ export default function App() {
         </View>
       )}
 
-      {/* Modal Preview Foto */}
+      {/* Modal Preview Foto (Mendukung Swipe Kiri / Kanan) */}
       <PhotoPreviewModal
         visible={showPreview}
         onClose={closePreview}
-        photoUri={lastPhoto}
-        photoTimestamp={lastPhotoTimestamp}
+        photos={galleryPhotos}
+        initialIndex={previewInitialIndex}
         timeFormat={timeFormat}
-        onDelete={deletePhoto}
-        onShare={sharePhoto}
+        onDeleteAsset={deleteAssetFromPreview}
         onOpenGallery={openGalleryFromPreview}
+        fallbackPhotoUri={lastPhoto}
+        fallbackPhotoTimestamp={lastPhotoTimestamp}
       />
 
       {/* Tampilan Galeri */}
@@ -821,7 +881,7 @@ export default function App() {
         timeFormat={timeFormat}
         onToggleTimeFormat={() => setTimeFormat(f => f === '24h' ? '12h' : '24h')}
         logoPosition={logoPosition}
-        onCycleLogoPosition={cycleLogoPosition}
+        onSelectLogoPosition={(pos) => setLogoPosition(pos)}
         mirrorImage={mirrorImage}
         onToggleMirrorImage={() => setMirrorImage(m => !m)}
       />
@@ -840,25 +900,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#000',
   },
-  // Kontainer offscreen untuk komposit ViewShot (dimensi diatur inline)
   offscreen: {
     position: 'absolute',
     left: -9999,
     top: 0,
     overflow: 'hidden',
   },
-  offscreenViewShot: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_WIDTH * (4 / 3),
-  },
   camera: {
     width: '100%',
     aspectRatio: 3 / 4,
-  },
-  galleryOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#000',
-    zIndex: 200,
   },
   fullCameraWrapper: {
     flex: 1,
@@ -872,7 +922,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 50,
-    paddingTop: 36,
+    paddingTop: Platform.OS === 'android' ? (RNStatusBar.currentHeight || 24) + 12 : 44,
     paddingHorizontal: 16,
   },
   topBarRow: {
@@ -882,7 +932,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   topBarButton: {
-    width: 38,
+    minWidth: 38,
     height: 38,
     borderRadius: 19,
     backgroundColor: 'rgba(0,0,0,0.4)',
@@ -890,11 +940,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 8,
+  },
+  topBarButtonActive: {
+    backgroundColor: 'rgba(251,191,36,0.2)',
+    borderColor: 'rgba(251,191,36,0.6)',
+  },
+  timerButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  timerBadgeText: {
+    color: '#fbbf24',
+    fontSize: 11,
+    fontWeight: '700',
   },
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 20,
     gap: 6,
@@ -906,7 +971,7 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 10,
     fontWeight: '700',
-    letterSpacing: 1,
+    letterSpacing: 0.5,
   },
   watermarkContainer: {
     position: 'absolute',
@@ -978,6 +1043,43 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     zIndex: 100,
   },
+  countdownOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 90,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 20,
+  },
+  countdownCircle: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: 'rgba(255,255,255,0.4)',
+  },
+  countdownNumber: {
+    color: '#fff',
+    fontSize: 64,
+    fontWeight: '800',
+  },
+  countdownCancelButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(239, 68, 68, 0.85)',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  countdownCancelText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
   controlsContainer: {
     position: 'absolute',
     bottom: 40,
@@ -1026,6 +1128,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     opacity: 0.1,
   },
+  captureButtonStop: {
+    width: 26,
+    height: 26,
+    borderRadius: 4,
+    backgroundColor: '#fff',
+  },
   thumbnailImage: {
     width: '100%',
     height: '100%',
@@ -1066,7 +1174,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  // Style thumbnail peta
   mapThumbnailContainer: {
     width: 100,
     height: 100,
