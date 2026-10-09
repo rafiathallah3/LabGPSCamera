@@ -1,12 +1,14 @@
 {
   "name": "iflab-gps-camera",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "build:aab": "cd android && gradlew.bat bundleRelease",
+    "build:apk": "cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
